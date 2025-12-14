@@ -1,0 +1,2376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Seismic Permits">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%231e3a5f' width='100' height='100' rx='20'/><text y='.9em' font-size='80' x='50%' text-anchor='middle'>📍</text></svg>">
+  <link rel="manifest" href="manifest.json">
+  <title>Passive Seismic Permit App</title>
+  <script>
+    // Register Service Worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js')
+          .then(reg => console.log('SW registered:', reg.scope))
+          .catch(err => console.log('SW registration failed:', err));
+      });
+    }
+  </script>
+  
+  <!-- Leaflet + ESRI Leaflet for ArcGIS layers -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/esri-leaflet@3.0.12/dist/esri-leaflet.js"></script>
+  
+  <!-- PDF Generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  
+  <!-- Shapefile Parser -->
+  <script src="https://unpkg.com/shpjs@latest/dist/shp.js"></script>
+  
+  <!-- Signature Pad -->
+  <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
+  
+  <!-- React -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            navy: { 50: '#f0f4f8', 100: '#d9e2ec', 200: '#bcccdc', 300: '#9fb3c8', 400: '#829ab1', 500: '#627d98', 600: '#486581', 700: '#334e68', 800: '#243b53', 900: '#102a43' },
+            earth: { 50: '#faf6f1', 100: '#f5ede3', 200: '#e8d5be', 300: '#d4b896', 400: '#c19a6b', 500: '#a67c52', 600: '#8b6642', 700: '#6f5135', 800: '#533d28', 900: '#38291b' }
+          },
+          fontFamily: {
+            display: ['Georgia', 'serif'],
+            body: ['system-ui', '-apple-system', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+  
+  <style>
+    * { -webkit-tap-highlight-color: transparent; }
+    body { 
+      font-family: system-ui, -apple-system, sans-serif;
+      background: linear-gradient(135deg, #102a43 0%, #243b53 100%);
+      min-height: 100vh;
+      overscroll-behavior: none;
+    }
+    .signature-canvas { touch-action: none; }
+    .scrollbar-hide::-webkit-scrollbar { display: none; }
+    .glass { 
+      background: rgba(255,255,255,0.95);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-slide-up { animation: slideUp 0.4s ease-out; }
+    .btn-primary {
+      background: linear-gradient(135deg, #1e3a5f 0%, #334e68 100%);
+      color: white;
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-weight: 600;
+      transition: all 0.2s;
+      box-shadow: 0 4px 14px rgba(30, 58, 95, 0.3);
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(30, 58, 95, 0.4); }
+    .btn-primary:active { transform: translateY(0); }
+    .input-field {
+      width: 100%;
+      padding: 14px 16px;
+      border: 2px solid #e8d5be;
+      border-radius: 10px;
+      font-size: 16px;
+      transition: all 0.2s;
+      background: white;
+    }
+    .input-field:focus { outline: none; border-color: #1e3a5f; box-shadow: 0 0 0 3px rgba(30, 58, 95, 0.1); }
+    .card {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+      padding: 24px;
+    }
+    .mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib { display: none !important; }
+    .leaflet-container { width: 100%; height: 100%; background: #f0f4f8; }
+    .leaflet-control-attribution { display: none !important; }
+    .node-marker-wrapper {
+      background: transparent !important;
+      border: none !important;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+    
+    // Global error handler
+    window.onerror = function(msg, url, lineNo, columnNo, error) {
+      console.error('Global error:', msg, url, lineNo, columnNo, error);
+      return false;
+    };
+    
+    window.onunhandledrejection = function(event) {
+      console.error('Unhandled promise rejection:', event.reason);
+    };
+    
+    console.log('App initializing...');
+    
+    // ============= DATABASE (IndexedDB for offline) =============
+    const DB_NAME = 'SeismicPermitDB';
+    const DB_VERSION = 1;
+    
+    const initDB = () => {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+        request.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains('owners')) {
+            db.createObjectStore('owners', { keyPath: 'id', autoIncrement: true });
+          }
+          if (!db.objectStoreNames.contains('provisions')) {
+            db.createObjectStore('provisions', { keyPath: 'id', autoIncrement: true });
+          }
+          if (!db.objectStoreNames.contains('agreements')) {
+            db.createObjectStore('agreements', { keyPath: 'id', autoIncrement: true });
+          }
+          if (!db.objectStoreNames.contains('parcels')) {
+            db.createObjectStore('parcels', { keyPath: 'id', autoIncrement: true });
+          }
+          if (!db.objectStoreNames.contains('settings')) {
+            db.createObjectStore('settings', { keyPath: 'key' });
+          }
+        };
+      });
+    };
+    
+    const dbOperation = async (storeName, mode, operation) => {
+      const db = await initDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, mode);
+        const store = tx.objectStore(storeName);
+        const request = operation(store);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    };
+    
+    // ============= DEFAULT PROVISIONS =============
+    const DEFAULT_PROVISIONS = [
+      { text: "Landowner requests 48-hour advance notice before any entry onto the Property.", category: "Access" },
+      { text: "Landowner requests 24-hour advance notice before any entry onto the Property.", category: "Access" },
+      { text: "Company shall contact Landowner by phone prior to each site visit.", category: "Access" },
+      { text: "All gates must remain closed at all times. Company shall ensure gates are secured after each entry.", category: "Access" },
+      { text: "Company vehicles shall only use designated farm roads and access paths.", category: "Access" },
+      { text: "No Company activity shall occur within 500 feet of the residence without prior approval.", category: "Proximity" },
+      { text: "No Company activity shall occur within 300 feet of any livestock areas or barns.", category: "Proximity" },
+      { text: "Sensors shall not be placed within 100 feet of any water wells or springs.", category: "Proximity" },
+      { text: "Sensors shall not be placed in areas with actively growing crops.", category: "Agriculture" },
+      { text: "Company shall avoid any activity during harvest season (specify dates: _______).", category: "Agriculture" },
+      { text: "Company shall coordinate sensor placement to avoid interference with irrigation systems.", category: "Agriculture" },
+      { text: "All sensor equipment must be clearly marked with visible flagging.", category: "Equipment" },
+      { text: "Company shall provide Landowner with GPS coordinates of all sensor placements.", category: "Equipment" },
+      { text: "Sensor retrieval must occur within 30 days of the end date specified above.", category: "Timeline" },
+      { text: "Company shall provide Landowner with a copy of all seismic data collected from the Property upon request.", category: "Data" },
+      { text: "Company shall not share Property-specific data with third parties without Landowner's written consent.", category: "Data" },
+      { text: "Landowner reserves the right to terminate this Agreement with 7 days written notice.", category: "Termination" },
+      { text: "If sensors are damaged by normal farming operations, Company waives any claim for damages.", category: "Liability" },
+      { text: "Company shall carry minimum liability insurance of $1,000,000 and provide certificate upon request.", category: "Insurance" },
+      { text: "Payment shall be made by check payable to: _______________________.", category: "Payment" }
+    ];
+    
+    // ============= ASANA CONFIG =============
+    const ASANA_PROJECT_ID = '1212436262183432';
+    
+    // ============= ARCGIS CONFIG =============
+    const ARCGIS_FEATURE_SERVICE = 'https://services3.arcgis.com/lM6OWhJ7OwVp3Ey6/arcgis/rest/services/IN_Blackford_County_18009_6b329a3d/FeatureServer/0';
+    const ARCGIS_FIELDS = {
+      parcelNumber: 'PARCEL_ID',
+      legalDescription: 'LEGAL_DSC1',
+      ownerName: 'OWNER',
+      signedStatus: 'SIGNED_STATUS'
+    };
+    
+    // ============= MAIN APP =============
+    function App() {
+      const [view, setView] = useState('home');
+      const [owners, setOwners] = useState([]);
+      const [provisions, setProvisions] = useState([]);
+      const [parcels, setParcels] = useState([]);
+      const [pendingUploads, setPendingUploads] = useState([]);
+      const [isOnline, setIsOnline] = useState(navigator.onLine);
+      const [asanaToken, setAsanaToken] = useState('');
+      const [companyName, setCompanyName] = useState('');
+      const [agentName, setAgentName] = useState('');
+      const [agentTitle, setAgentTitle] = useState('');
+      const [agentContact, setAgentContact] = useState('');
+      
+      // Load data on mount
+      useEffect(() => {
+        loadData();
+        window.addEventListener('online', () => setIsOnline(true));
+        window.addEventListener('offline', () => setIsOnline(false));
+      }, []);
+      
+      const loadData = async () => {
+        try {
+          const db = await initDB();
+          
+          // Load owners
+          const ownersData = await dbOperation('owners', 'readonly', s => s.getAll());
+          setOwners(ownersData || []);
+          
+          // Load provisions (or set defaults)
+          let provisionsData = await dbOperation('provisions', 'readonly', s => s.getAll());
+          if (!provisionsData || provisionsData.length === 0) {
+            // Initialize with defaults
+            for (const p of DEFAULT_PROVISIONS) {
+              await dbOperation('provisions', 'readwrite', s => s.add(p));
+            }
+            provisionsData = await dbOperation('provisions', 'readonly', s => s.getAll());
+          }
+          setProvisions(provisionsData);
+          
+          // Load parcels
+          const parcelsData = await dbOperation('parcels', 'readonly', s => s.getAll());
+          setParcels(parcelsData || []);
+          
+          // Load settings
+          const settings = await dbOperation('settings', 'readonly', s => s.getAll());
+          settings.forEach(s => {
+            if (s.key === 'asanaToken') setAsanaToken(s.value);
+            if (s.key === 'companyName') setCompanyName(s.value);
+            if (s.key === 'agentName') setAgentName(s.value);
+            if (s.key === 'agentTitle') setAgentTitle(s.value);
+            if (s.key === 'agentContact') setAgentContact(s.value);
+          });
+          
+          // Load pending uploads
+          const agreementsData = await dbOperation('agreements', 'readonly', s => s.getAll());
+          setPendingUploads(agreementsData.filter(a => !a.uploaded) || []);
+        } catch (err) {
+          console.error('Error loading data:', err);
+        }
+      };
+      
+      const saveSetting = async (key, value) => {
+        await dbOperation('settings', 'readwrite', s => s.put({ key, value }));
+      };
+      
+      return (
+        <div className="min-h-screen pb-24">
+          {/* Header */}
+          <header className="glass sticky top-0 z-50 px-6 py-4 border-b border-navy-100">
+            <div className="flex items-center justify-between max-w-4xl mx-auto">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-navy-700 to-navy-900 flex items-center justify-center text-white text-lg">
+                  📍
+                </div>
+                <div>
+                  <h1 className="font-display text-xl font-bold text-navy-900">Seismic Permits</h1>
+                  <p className="text-xs text-navy-500">Passive Sensor Agreements</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-orange-500'}`}></span>
+                <span className="text-xs text-navy-600">{isOnline ? 'Online' : 'Offline'}</span>
+                {pendingUploads.length > 0 && (
+                  <span className="ml-2 px-2 py-1 bg-orange-100 text-orange-700 text-xs rounded-full">
+                    {pendingUploads.length} pending
+                  </span>
+                )}
+              </div>
+            </div>
+          </header>
+          
+          {/* Main Content */}
+          <main className="max-w-4xl mx-auto px-4 py-6">
+            <ErrorBoundary onReset={() => setView('home')}>
+            {view === 'home' && (
+              <HomeView 
+                setView={setView} 
+                owners={owners} 
+                pendingUploads={pendingUploads}
+                isOnline={isOnline}
+              />
+            )}
+            {view === 'newAgreement' && (
+              <AgreementForm 
+                setView={setView}
+                owners={owners}
+                provisions={provisions}
+                parcels={parcels}
+                companyName={companyName}
+                agentName={agentName}
+                agentTitle={agentTitle}
+                agentContact={agentContact}
+                asanaToken={asanaToken}
+                onComplete={loadData}
+              />
+            )}
+            {view === 'owners' && (
+              <OwnersView 
+                setView={setView}
+                owners={owners}
+                setOwners={setOwners}
+                parcels={parcels}
+              />
+            )}
+            {view === 'provisions' && (
+              <ProvisionsView 
+                setView={setView}
+                provisions={provisions}
+                setProvisions={setProvisions}
+              />
+            )}
+            {view === 'settings' && (
+              <SettingsView 
+                setView={setView}
+                asanaToken={asanaToken}
+                setAsanaToken={(v) => { setAsanaToken(v); saveSetting('asanaToken', v); }}
+                companyName={companyName}
+                setCompanyName={(v) => { setCompanyName(v); saveSetting('companyName', v); }}
+                agentName={agentName}
+                setAgentName={(v) => { setAgentName(v); saveSetting('agentName', v); }}
+                agentTitle={agentTitle}
+                setAgentTitle={(v) => { setAgentTitle(v); saveSetting('agentTitle', v); }}
+                agentContact={agentContact}
+                setAgentContact={(v) => { setAgentContact(v); saveSetting('agentContact', v); }}
+                setParcels={setParcels}
+                loadData={loadData}
+              />
+            )}
+            {view === 'pending' && (
+              <PendingView 
+                setView={setView}
+                pendingUploads={pendingUploads}
+                asanaToken={asanaToken}
+                isOnline={isOnline}
+                onSync={loadData}
+              />
+            )}
+            </ErrorBoundary>
+          </main>
+          
+          {/* Bottom Navigation */}
+          <nav className="fixed bottom-0 left-0 right-0 glass border-t border-navy-100 px-6 py-3 z-50">
+            <div className="flex justify-around max-w-md mx-auto">
+              {[
+                { id: 'home', icon: '🏠', label: 'Home' },
+                { id: 'owners', icon: '👥', label: 'Owners' },
+                { id: 'provisions', icon: '📋', label: 'Provisions' },
+                { id: 'settings', icon: '⚙️', label: 'Settings' }
+              ].map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => setView(item.id)}
+                  className={`flex flex-col items-center gap-1 px-4 py-2 rounded-xl transition-all ${
+                    view === item.id ? 'bg-navy-100 text-navy-900' : 'text-navy-500'
+                  }`}
+                >
+                  <span className="text-xl">{item.icon}</span>
+                  <span className="text-xs font-medium">{item.label}</span>
+                </button>
+              ))}
+            </div>
+          </nav>
+        </div>
+      );
+    }
+    
+    // ============= HOME VIEW =============
+    function HomeView({ setView, owners, pendingUploads, isOnline }) {
+      return (
+        <div className="space-y-6 animate-slide-up">
+          {/* Quick Actions */}
+          <div className="card">
+            <h2 className="font-display text-lg font-bold text-navy-900 mb-4">Quick Actions</h2>
+            <button 
+              onClick={() => setView('newAgreement')}
+              className="w-full btn-primary text-lg py-4 flex items-center justify-center gap-3"
+            >
+              <span className="text-2xl">📝</span>
+              New Agreement
+            </button>
+          </div>
+          
+          {/* Stats */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="card text-center">
+              <p className="text-3xl font-bold text-navy-900">{owners.length}</p>
+              <p className="text-sm text-navy-500">Landowners</p>
+            </div>
+            <div 
+              className="card text-center cursor-pointer hover:bg-navy-50 transition-colors"
+              onClick={() => setView('pending')}
+            >
+              <p className="text-3xl font-bold text-orange-600">{pendingUploads.length}</p>
+              <p className="text-sm text-navy-500">Pending Upload</p>
+            </div>
+          </div>
+          
+          {/* Status */}
+          <div className="card">
+            <h2 className="font-display text-lg font-bold text-navy-900 mb-3">System Status</h2>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between py-2 border-b border-navy-100">
+                <span className="text-navy-600">Connection</span>
+                <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                  isOnline ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'
+                }`}>
+                  {isOnline ? 'Online' : 'Offline Mode'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between py-2">
+                <span className="text-navy-600">Database</span>
+                <span className="px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-700">
+                  Ready
+                </span>
+              </div>
+            </div>
+          </div>
+          
+          {/* Instructions */}
+          <div className="card bg-earth-50 border border-earth-200">
+            <h3 className="font-display font-bold text-navy-900 mb-2">📱 Add to Home Screen</h3>
+            <p className="text-sm text-navy-600">
+              For the best experience, tap the Share button in Safari and select "Add to Home Screen" to install this app.
+            </p>
+          </div>
+        </div>
+      );
+    }
+    
+    // ============= ERROR BOUNDARY =============
+    class ErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { hasError: false, error: null };
+      }
+      static getDerivedStateFromError(error) {
+        return { hasError: true, error };
+      }
+      componentDidCatch(error, errorInfo) {
+        console.error('Error caught:', error, errorInfo);
+      }
+      render() {
+        if (this.state.hasError) {
+          return (
+            <div className="card bg-red-50 border border-red-200 m-4">
+              <h3 className="font-bold text-red-800 mb-2">Something went wrong</h3>
+              <p className="text-red-600 text-sm mb-4">{this.state.error?.message || 'Unknown error'}</p>
+              <button 
+                onClick={() => { this.setState({ hasError: false }); this.props.onReset?.(); }}
+                className="btn-primary"
+              >
+                Go Back
+              </button>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+    
+    // ============= AGREEMENT FORM =============
+    function AgreementForm({ setView, owners, provisions, parcels, companyName, agentName, agentTitle, agentContact, asanaToken, onComplete }) {
+      const [step, setStep] = useState(1);
+      const [selectedOwner, setSelectedOwner] = useState(null);
+      const [selectedParcels, setSelectedParcels] = useState([]); // Array of parcels for this owner
+      const [formData, setFormData] = useState({
+        date: new Date().toISOString().split('T')[0],
+        months: '12',
+        pricePerNode: '',
+        numberOfNodes: '',
+        selectedProvisions: [],
+        customProvisions: '',
+        legalDescription: '',
+        nodes: [],
+        landownerSignature: null,
+        agentSignature: null
+      });
+      const [searchQuery, setSearchQuery] = useState('');
+      const [mapSnapshot, setMapSnapshot] = useState(null);
+      const [mapError, setMapError] = useState(false);
+      
+      // Safe filter with null checks
+      const ownersList = Array.isArray(owners) ? owners : [];
+      
+      // Group parcels by owner name to find unique owners
+      const uniqueOwners = {};
+      ownersList.forEach(o => {
+        const name = (o.name || 'Unknown').trim();
+        if (!uniqueOwners[name]) {
+          uniqueOwners[name] = [];
+        }
+        uniqueOwners[name].push(o);
+      });
+      
+      // Create list of unique owner names with parcel counts
+      const ownerNames = Object.keys(uniqueOwners).map(name => ({
+        name,
+        parcels: uniqueOwners[name],
+        parcelCount: uniqueOwners[name].length,
+        totalAcres: uniqueOwners[name].reduce((sum, p) => sum + (parseFloat(p.acreage) || 0), 0).toFixed(2)
+      }));
+      
+      const filteredOwnerNames = ownerNames.filter(o => {
+        const name = (o.name || '').toLowerCase();
+        const query = (searchQuery || '').toLowerCase();
+        // Also search parcel numbers
+        const parcelMatch = o.parcels.some(p => (p.parcelNumber || '').toLowerCase().includes(query));
+        return name.includes(query) || parcelMatch;
+      });
+      
+      const totalPayment = (parseFloat(formData.pricePerNode) || 0) * (parseInt(formData.numberOfNodes) || 0);
+      
+      const handleNext = () => setStep(s => s + 1);
+      const handleBack = () => setStep(s => s - 1);
+      
+      // Toggle a parcel selection
+      const toggleParcel = (parcel) => {
+        setSelectedParcels(prev => {
+          const isSelected = prev.some(p => p.id === parcel.id);
+          let newSelection;
+          if (isSelected) {
+            newSelection = prev.filter(p => p.id !== parcel.id);
+          } else {
+            newSelection = [...prev, parcel];
+          }
+          
+          // Update legal description with combined values
+          const combinedLegal = newSelection
+            .map(p => p.legalDescription)
+            .filter(Boolean)
+            .join('; ');
+          setFormData(f => ({ ...f, legalDescription: combinedLegal }));
+          
+          return newSelection;
+        });
+      };
+      
+      // Select all parcels for an owner
+      const selectAllParcels = (parcels) => {
+        setSelectedParcels(parcels);
+        const combinedLegal = parcels
+          .map(p => p.legalDescription)
+          .filter(Boolean)
+          .join('; ');
+        setFormData(f => ({ ...f, legalDescription: combinedLegal }));
+      };
+      
+      const handleSave = async () => {
+        // Combine parcel info for the agreement
+        const combinedParcelNumbers = selectedParcels.map(p => p.parcelNumber).join(', ');
+        const combinedAcreage = selectedParcels.reduce((sum, p) => sum + (parseFloat(p.acreage) || 0), 0).toFixed(2);
+        
+        // Create owner object with combined parcel info
+        const ownerInfo = {
+          name: selectedOwner?.name || 'Unknown',
+          parcelNumber: combinedParcelNumbers,
+          acreage: combinedAcreage,
+          address: selectedParcels[0]?.address || '',
+          phone: selectedParcels[0]?.phone || '',
+          email: selectedParcels[0]?.email || '',
+          parcels: selectedParcels // Keep individual parcels for reference
+        };
+        
+        // Create agreement object
+        const agreement = {
+          ...formData,
+          owner: ownerInfo,
+          companyName,
+          agentName,
+          agentTitle,
+          agentContact,
+          totalPayment,
+          mapSnapshot,
+          createdAt: new Date().toISOString(),
+          uploaded: false
+        };
+        
+        // Save to IndexedDB
+        const id = await dbOperation('agreements', 'readwrite', s => s.add(agreement));
+        
+        // Generate PDF
+        await generatePDF({ ...agreement, id });
+        
+        // Update parcel status in ArcGIS for ALL selected parcels
+        if (navigator.onLine) {
+          for (const parcel of selectedParcels) {
+            if (parcel.parcelNumber) {
+              try {
+                const updated = await updateParcelStatus(parcel.parcelNumber, 'Signed');
+                if (updated) {
+                  console.log('Parcel status updated in ArcGIS:', parcel.parcelNumber);
+                }
+              } catch (err) {
+                console.error('Failed to update parcel status in ArcGIS:', parcel.parcelNumber, err);
+              }
+            }
+          }
+        }
+        
+        // Try to upload to Asana if online
+        if (navigator.onLine && asanaToken) {
+          try {
+            await uploadToAsana(agreement, asanaToken);
+            await dbOperation('agreements', 'readwrite', s => s.put({ ...agreement, id, uploaded: true }));
+          } catch (err) {
+            console.error('Asana upload failed, will retry later:', err);
+          }
+        }
+        
+        onComplete();
+        setView('home');
+      };
+      
+      return (
+        <div className="animate-slide-up">
+          {/* Progress */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <button onClick={() => setView('home')} className="text-navy-600 flex items-center gap-1">
+                ← Back
+              </button>
+              <span className="text-sm text-navy-500">Step {step} of 5</span>
+            </div>
+            <div className="h-2 bg-navy-100 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-gradient-to-r from-navy-600 to-navy-800 transition-all duration-300"
+                style={{ width: `${(step / 5) * 100}%` }}
+              />
+            </div>
+          </div>
+          
+          {/* Step 1: Select Owner and Parcels */}
+          {step === 1 && (
+            <div className="card">
+              <h2 className="font-display text-xl font-bold text-navy-900 mb-4">Select Landowner</h2>
+              <input
+                type="text"
+                placeholder="Search by name or parcel..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="input-field mb-4"
+              />
+              
+              {!selectedOwner ? (
+                // Show list of unique owners
+                <div className="max-h-80 overflow-y-auto space-y-2 scrollbar-hide">
+                  {filteredOwnerNames.map(ownerGroup => (
+                    <div
+                      key={ownerGroup.name}
+                      onClick={() => {
+                        setSelectedOwner(ownerGroup);
+                        selectAllParcels(ownerGroup.parcels);
+                      }}
+                      className="p-4 rounded-xl border-2 cursor-pointer transition-all border-navy-100 hover:border-navy-300"
+                    >
+                      <p className="font-semibold text-navy-900">{ownerGroup.name}</p>
+                      <p className="text-sm text-navy-500">
+                        {ownerGroup.parcelCount} parcel{ownerGroup.parcelCount !== 1 ? 's' : ''} • {ownerGroup.totalAcres} acres total
+                      </p>
+                      {ownerGroup.parcelCount > 1 && (
+                        <p className="text-xs text-blue-600 mt-1">Click to select parcels</p>
+                      )}
+                    </div>
+                  ))}
+                  {filteredOwnerNames.length === 0 && (
+                    <p className="text-center text-navy-500 py-8">No owners found. Add owners in the Owners tab.</p>
+                  )}
+                </div>
+              ) : (
+                // Show parcels for selected owner with checkboxes
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <button 
+                      onClick={() => { setSelectedOwner(null); setSelectedParcels([]); }}
+                      className="text-navy-600 text-sm flex items-center gap-1"
+                    >
+                      ← Back to owners
+                    </button>
+                    <button
+                      onClick={() => selectAllParcels(selectedOwner.parcels)}
+                      className="text-sm text-navy-600 underline"
+                    >
+                      Select All
+                    </button>
+                  </div>
+                  
+                  <div className="bg-navy-50 rounded-xl p-3 mb-3">
+                    <p className="font-semibold text-navy-900">{selectedOwner.name}</p>
+                    <p className="text-sm text-navy-600">
+                      {selectedParcels.length} of {selectedOwner.parcelCount} parcels selected
+                    </p>
+                  </div>
+                  
+                  <div className="max-h-60 overflow-y-auto space-y-2 scrollbar-hide">
+                    {selectedOwner.parcels.map(parcel => {
+                      const isSelected = selectedParcels.some(p => p.id === parcel.id);
+                      return (
+                        <div
+                          key={parcel.id}
+                          onClick={() => toggleParcel(parcel)}
+                          className={`p-3 rounded-xl border-2 cursor-pointer transition-all ${
+                            isSelected
+                              ? 'border-navy-600 bg-navy-50'
+                              : 'border-navy-100 hover:border-navy-300'
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center mt-0.5 ${
+                              isSelected ? 'bg-navy-600 border-navy-600' : 'border-navy-300'
+                            }`}>
+                              {isSelected && <span className="text-white text-xs">✓</span>}
+                            </div>
+                            <div className="flex-1">
+                              <p className="font-medium text-navy-800">Parcel: {parcel.parcelNumber}</p>
+                              {parcel.acreage && <p className="text-sm text-navy-500">{parcel.acreage} acres</p>}
+                              {parcel.legalDescription && (
+                                <p className="text-xs text-green-600 mt-1">✓ Legal description</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              
+              <button 
+                onClick={handleNext}
+                disabled={selectedParcels.length === 0}
+                className={`w-full mt-4 btn-primary ${selectedParcels.length === 0 ? 'opacity-50' : ''}`}
+              >
+                Continue with {selectedParcels.length} parcel{selectedParcels.length !== 1 ? 's' : ''}
+              </button>
+            </div>
+          )}
+          
+          {/* Step 2: Agreement Details */}
+          {step === 2 && (
+            <div className="card">
+              <h2 className="font-display text-xl font-bold text-navy-900 mb-4">Agreement Details</h2>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-navy-700 mb-1">Agreement Date</label>
+                  <input
+                    type="date"
+                    value={formData.date}
+                    onChange={e => setFormData(f => ({ ...f, date: e.target.value }))}
+                    className="input-field"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-navy-700 mb-1">Agreement Duration (months)</label>
+                  <input
+                    type="number"
+                    value={formData.months}
+                    onChange={e => setFormData(f => ({ ...f, months: e.target.value }))}
+                    className="input-field"
+                    placeholder="12"
+                    min="1"
+                  />
+                  {formData.date && formData.months && (
+                    <p className="text-sm text-navy-500 mt-1">
+                      Ends: {(() => {
+                        const start = new Date(formData.date);
+                        start.setMonth(start.getMonth() + parseInt(formData.months));
+                        return start.toLocaleDateString();
+                      })()}
+                    </p>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-navy-700 mb-1">Price per Node ($)</label>
+                    <input
+                      type="number"
+                      value={formData.pricePerNode}
+                      onChange={e => setFormData(f => ({ ...f, pricePerNode: e.target.value }))}
+                      className="input-field"
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-navy-700 mb-1"># of Nodes</label>
+                    <input
+                      type="number"
+                      value={formData.numberOfNodes}
+                      onChange={e => setFormData(f => ({ ...f, numberOfNodes: e.target.value }))}
+                      className="input-field"
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+                <div className="p-4 bg-earth-50 rounded-xl border border-earth-200">
+                  <p className="text-sm text-navy-600">Total Payment</p>
+                  <p className="text-2xl font-bold text-navy-900">${totalPayment.toFixed(2)}</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-navy-700 mb-1">Legal Description (Exhibit A)</label>
+                  <textarea
+                    value={formData.legalDescription}
+                    onChange={e => setFormData(f => ({ ...f, legalDescription: e.target.value }))}
+                    className="input-field h-24"
+                    placeholder="Enter legal description of the property..."
+                  />
+                </div>
+              </div>
+              <div className="flex gap-3 mt-6">
+                <button onClick={handleBack} className="flex-1 py-3 border-2 border-navy-200 rounded-xl text-navy-700 font-medium">
+                  Back
+                </button>
+                <button onClick={handleNext} className="flex-1 btn-primary">
+                  Continue
+                </button>
+              </div>
+            </div>
+          )}
+          
+          {/* Step 3: Node Placement Map */}
+          {step === 3 && (
+            <div className="card">
+              <h2 className="font-display text-xl font-bold text-navy-900 mb-4">Node Placement (Exhibit B)</h2>
+              <p className="text-sm text-navy-600 mb-4">Tap on the map to place sensor nodes. Tap a node to remove it.</p>
+              <NodePlacementMap 
+                nodes={formData.nodes}
+                setNodes={(nodes) => {
+                  setFormData(f => ({ 
+                    ...f, 
+                    nodes,
+                    // Auto-update number of nodes if not manually set or if it matches previous count
+                    numberOfNodes: (!f.numberOfNodes || f.numberOfNodes === String(f.nodes.length)) 
+                      ? String(nodes.length) 
+                      : f.numberOfNodes
+                  }));
+                }}
+                parcels={parcels}
+                selectedParcels={selectedParcels}
+                onSnapshot={setMapSnapshot}
+              />
+              <div className="flex items-center justify-center gap-4 mt-4">
+                <p className="text-navy-600">
+                  <span className="font-bold text-navy-900 text-xl">{formData.nodes.length}</span> nodes placed
+                </p>
+                {formData.numberOfNodes && formData.nodes.length > 0 && formData.numberOfNodes !== String(formData.nodes.length) && (
+                  <span className="text-orange-600 text-sm">(Form says {formData.numberOfNodes})</span>
+                )}
+              </div>
+              <div className="flex gap-3 mt-6">
+                <button onClick={handleBack} className="flex-1 py-3 border-2 border-navy-200 rounded-xl text-navy-700 font-medium">
+                  Back
+                </button>
+                <button onClick={handleNext} className="flex-1 btn-primary">
+                  Continue
+                </button>
+              </div>
+            </div>
+          )}
+          
+          {/* Step 4: Provisions */}
+          {step === 4 && (
+            <div className="card">
+              <h2 className="font-display text-xl font-bold text-navy-900 mb-4">Special Provisions</h2>
+              <p className="text-sm text-navy-600 mb-4">Select applicable provisions or add custom terms.</p>
+              <div className="max-h-64 overflow-y-auto space-y-2 mb-4 scrollbar-hide">
+                {provisions.map(p => (
+                  <label 
+                    key={p.id}
+                    className={`flex items-start gap-3 p-3 rounded-xl border-2 cursor-pointer transition-all ${
+                      formData.selectedProvisions.includes(p.id)
+                        ? 'border-navy-600 bg-navy-50'
+                        : 'border-navy-100'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={formData.selectedProvisions.includes(p.id)}
+                      onChange={e => {
+                        if (e.target.checked) {
+                          setFormData(f => ({ ...f, selectedProvisions: [...f.selectedProvisions, p.id] }));
+                        } else {
+                          setFormData(f => ({ ...f, selectedProvisions: f.selectedProvisions.filter(id => id !== p.id) }));
+                        }
+                      }}
+                      className="mt-1 w-5 h-5 rounded"
+                    />
+                    <div>
+                      <span className="text-xs px-2 py-0.5 bg-earth-100 text-earth-700 rounded-full">{p.category}</span>
+                      <p className="text-sm text-navy-800 mt-1">{p.text}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-navy-700 mb-1">Custom Provisions</label>
+                <textarea
+                  value={formData.customProvisions}
+                  onChange={e => setFormData(f => ({ ...f, customProvisions: e.target.value }))}
+                  className="input-field h-24"
+                  placeholder="Enter any additional custom provisions..."
+                />
+              </div>
+              <div className="flex gap-3 mt-6">
+                <button onClick={handleBack} className="flex-1 py-3 border-2 border-navy-200 rounded-xl text-navy-700 font-medium">
+                  Back
+                </button>
+                <button onClick={handleNext} className="flex-1 btn-primary">
+                  Continue
+                </button>
+              </div>
+            </div>
+          )}
+          
+          {/* Step 5: Signatures */}
+          {step === 5 && (
+            <div className="card">
+              <h2 className="font-display text-xl font-bold text-navy-900 mb-4">Signatures</h2>
+              
+              {/* Summary */}
+              <div className="p-4 bg-navy-50 rounded-xl mb-6">
+                <h3 className="font-semibold text-navy-900 mb-2">Agreement Summary</h3>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <p className="text-navy-600">Landowner:</p>
+                  <p className="text-navy-900 font-medium">{selectedOwner?.name}</p>
+                  <p className="text-navy-600">Parcels:</p>
+                  <div className="text-navy-900 font-medium">
+                    {selectedParcels.length} parcel{selectedParcels.length !== 1 ? 's' : ''}
+                    <p className="text-xs text-navy-500 font-normal">
+                      {selectedParcels.map(p => p.parcelNumber).join(', ')}
+                    </p>
+                  </div>
+                  <p className="text-navy-600">Total Acres:</p>
+                  <p className="text-navy-900 font-medium">
+                    {selectedParcels.reduce((sum, p) => sum + (parseFloat(p.acreage) || 0), 0).toFixed(2)}
+                  </p>
+                  <p className="text-navy-600">Nodes:</p>
+                  <p className="text-navy-900 font-medium">{formData.numberOfNodes}</p>
+                  <p className="text-navy-600">Total Payment:</p>
+                  <p className="text-navy-900 font-medium">${totalPayment.toFixed(2)}</p>
+                </div>
+              </div>
+              
+              {/* Landowner Signature */}
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-navy-700 mb-2">Landowner Signature</label>
+                <SignatureInput 
+                  onSave={(sig) => setFormData(f => ({ ...f, landownerSignature: sig }))}
+                  signature={formData.landownerSignature}
+                />
+              </div>
+              
+              {/* Agent Signature */}
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-navy-700 mb-2">Agent Signature ({agentName || 'Agent'})</label>
+                <SignatureInput 
+                  onSave={(sig) => setFormData(f => ({ ...f, agentSignature: sig }))}
+                  signature={formData.agentSignature}
+                />
+              </div>
+              
+              <div className="flex gap-3 mt-6">
+                <button onClick={handleBack} className="flex-1 py-3 border-2 border-navy-200 rounded-xl text-navy-700 font-medium">
+                  Back
+                </button>
+                <button 
+                  onClick={handleSave}
+                  disabled={!formData.landownerSignature || !formData.agentSignature}
+                  className={`flex-1 btn-primary ${(!formData.landownerSignature || !formData.agentSignature) ? 'opacity-50' : ''}`}
+                >
+                  Complete & Save
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+    
+    // ============= SIGNATURE PAD COMPONENT =============
+    function SignatureInput({ onSave, signature }) {
+      const canvasRef = useRef(null);
+      const padRef = useRef(null);
+      
+      useEffect(() => {
+        if (canvasRef.current && !padRef.current && window.SignaturePad) {
+          try {
+            padRef.current = new window.SignaturePad(canvasRef.current, {
+              backgroundColor: 'rgb(255, 255, 255)',
+              penColor: 'rgb(16, 42, 67)'
+            });
+            
+            if (signature) {
+              padRef.current.fromDataURL(signature);
+            }
+            
+            padRef.current.addEventListener('endStroke', () => {
+              onSave(padRef.current.toDataURL());
+            });
+          } catch (e) {
+            console.error('SignaturePad init error:', e);
+          }
+        }
+      }, []);
+      
+      const clear = () => {
+        if (padRef.current) {
+          padRef.current.clear();
+          onSave(null);
+        }
+      };
+      
+      return (
+        <div className="relative">
+          <canvas 
+            ref={canvasRef}
+            className="signature-canvas w-full h-32 border-2 border-navy-200 rounded-xl bg-white"
+            width={600}
+            height={150}
+          />
+          <button 
+            onClick={clear}
+            type="button"
+            className="absolute top-2 right-2 px-2 py-1 text-xs bg-white/80 text-navy-600 rounded-lg"
+          >
+            Clear
+          </button>
+          {signature && (
+            <span className="absolute bottom-2 left-2 text-xs text-green-600">✓ Signed</span>
+          )}
+        </div>
+      );
+    }
+    
+    // ============= NODE PLACEMENT MAP =============
+    function NodePlacementMap({ nodes, setNodes, parcels, selectedParcels, onSnapshot }) {
+      const mapContainer = useRef(null);
+      const mapRef = useRef(null);
+      const parcelsLayerRef = useRef(null);
+      const markersRef = useRef([]);
+      const [mapReady, setMapReady] = useState(false);
+      const [mapError, setMapError] = useState(null);
+      const [parcelStatus, setParcelStatus] = useState('Loading parcels...');
+      
+      // Use refs to avoid stale closures
+      const nodesRef = useRef(nodes);
+      const selectedParcelsRef = useRef(selectedParcels);
+      useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+      useEffect(() => { selectedParcelsRef.current = selectedParcels; }, [selectedParcels]);
+      
+      // Get parcel numbers for highlighting
+      const selectedParcelNumbers = (selectedParcels || []).map(p => p.parcelNumber);
+      
+      // Initialize map once
+      useEffect(() => {
+        if (mapRef.current) return;
+        if (!mapContainer.current) return;
+        
+        try {
+          // Initialize Leaflet map centered on Blackford County, IN
+          mapRef.current = L.map(mapContainer.current, {
+            center: [40.47, -85.32], // Blackford County, IN
+            zoom: 12,
+            zoomControl: true
+          });
+          
+          // Add satellite imagery basemap
+          L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            maxZoom: 19
+          }).addTo(mapRef.current);
+          
+          // Add your ArcGIS Feature Layer using esri-leaflet
+          parcelsLayerRef.current = L.esri.featureLayer({
+            url: ARCGIS_FEATURE_SERVICE,
+            interactive: false,
+            style: function(feature) {
+              // Use ref to get current selected parcels
+              const currentSelected = selectedParcelsRef.current || [];
+              const selectedNums = currentSelected.map(p => String(p.parcelNumber).trim());
+              // Try multiple field names for parcel number
+              const parcelNum = String(
+                feature.properties[ARCGIS_FIELDS.parcelNumber] || 
+                feature.properties.PARCEL_ID || 
+                feature.properties.Parcel_ID || 
+                feature.properties.parcel_id || 
+                ''
+              ).trim();
+              const isSelected = selectedNums.includes(parcelNum);
+              
+              return {
+                color: isSelected ? '#ff6b35' : '#334e68',
+                weight: isSelected ? 4 : 2,
+                fillColor: isSelected ? '#ff6b35' : '#627d98',
+                fillOpacity: isSelected ? 0.3 : 0.15
+              };
+            }
+          });
+          
+          parcelsLayerRef.current.on('load', function() {
+            console.log('Parcels layer loaded');
+            setParcelStatus('Parcels loaded ✓');
+          });
+          
+          parcelsLayerRef.current.on('error', function(e) {
+            console.error('Parcels layer error:', e);
+            setParcelStatus('⚠️ Could not load parcels');
+          });
+          
+          parcelsLayerRef.current.addTo(mapRef.current);
+          
+          // Click to add node
+          mapRef.current.on('click', (e) => {
+            const newNode = {
+              id: Date.now(),
+              lng: e.latlng.lng,
+              lat: e.latlng.lat
+            };
+            setNodes([...nodesRef.current, newNode]);
+          });
+          
+          setMapReady(true);
+          
+          // Force map to recalculate size after render
+          setTimeout(() => {
+            if (mapRef.current) {
+              mapRef.current.invalidateSize();
+            }
+          }, 100);
+          
+        } catch (e) {
+          console.error('Map initialization error:', e);
+          setMapError('Failed to initialize map: ' + e.message);
+        }
+        
+        return () => {
+          if (mapRef.current) {
+            mapRef.current.remove();
+            mapRef.current = null;
+          }
+        };
+      }, []);
+      
+      // Zoom to selected parcels when they change
+      useEffect(() => {
+        if (!mapRef.current || !parcelsLayerRef.current) return;
+        if (!selectedParcels || selectedParcels.length === 0) return;
+        
+        const selectedNums = selectedParcels.map(p => String(p.parcelNumber).trim());
+        console.log('=== PARCEL ZOOM DEBUG ===');
+        console.log('Selected parcels:', selectedParcels);
+        console.log('Parcel numbers to find:', selectedNums);
+        console.log('Field name being used:', ARCGIS_FIELDS.parcelNumber);
+        
+        // Refresh layer styling
+        parcelsLayerRef.current.setStyle(function(feature) {
+          const parcelNum = String(
+            feature.properties[ARCGIS_FIELDS.parcelNumber] || 
+            feature.properties.PARCEL_ID || 
+            feature.properties.Parcel_ID || 
+            feature.properties.parcel_id || 
+            ''
+          ).trim();
+          const isSelected = selectedNums.includes(parcelNum);
+          if (isSelected) {
+            console.log('MATCHED parcel:', parcelNum);
+          }
+          return {
+            color: isSelected ? '#ff6b35' : '#334e68',
+            weight: isSelected ? 4 : 2,
+            fillColor: isSelected ? '#ff6b35' : '#627d98',
+            fillOpacity: isSelected ? 0.3 : 0.15
+          };
+        });
+        
+        // Query features to check what fields exist
+        parcelsLayerRef.current.query()
+          .where('1=1')
+          .run(function(error, featureCollection) {
+            if (error) {
+              console.error('Debug query error:', error);
+              return;
+            }
+            if (featureCollection && featureCollection.features && featureCollection.features.length > 0) {
+              const sampleProps = featureCollection.features[0].properties;
+              console.log('Available field names:', Object.keys(sampleProps));
+              console.log('Sample feature properties:', sampleProps);
+              
+              // Find which field contains parcel numbers
+              const possibleFields = ['PARCEL_ID', 'Parcel_ID', 'parcel_id', 'PARCELID', 'ParcelID', 'APN', 'PIN'];
+              possibleFields.forEach(field => {
+                if (sampleProps[field] !== undefined) {
+                  console.log(`Field "${field}" exists with value:`, sampleProps[field]);
+                }
+              });
+            }
+          });
+        
+        // Try different WHERE clause formats
+        const whereClause = selectedNums
+          .map(num => `${ARCGIS_FIELDS.parcelNumber} = '${num}'`)
+          .join(' OR ');
+        
+        console.log('Query WHERE clause:', whereClause);
+        
+        // Query and zoom to bounds
+        parcelsLayerRef.current.query()
+          .where(whereClause)
+          .bounds(function(error, latLngBounds) {
+            console.log('Bounds query result - error:', error, 'bounds:', latLngBounds);
+            if (error) {
+              console.error('Bounds query error:', error);
+              // Try alternate field names
+              const altWhereClause = selectedNums
+                .map(num => `Parcel_ID = '${num}'`)
+                .join(' OR ');
+              console.log('Trying alternate WHERE:', altWhereClause);
+              
+              parcelsLayerRef.current.query()
+                .where(altWhereClause)
+                .bounds(function(err2, bounds2) {
+                  if (!err2 && bounds2 && bounds2.isValid()) {
+                    mapRef.current.fitBounds(bounds2, { padding: [50, 50], maxZoom: 17 });
+                    setParcelStatus(`Showing ${selectedNums.length} parcel${selectedNums.length > 1 ? 's' : ''} ✓`);
+                  }
+                });
+              return;
+            }
+            if (latLngBounds && latLngBounds.isValid()) {
+              console.log('Valid bounds, zooming:', latLngBounds.toBBoxString());
+              mapRef.current.fitBounds(latLngBounds, { padding: [50, 50], maxZoom: 17 });
+              setParcelStatus(`Showing ${selectedNums.length} parcel${selectedNums.length > 1 ? 's' : ''} ✓`);
+            } else {
+              console.log('No valid bounds - parcel not found');
+              setParcelStatus('Parcels not found on map');
+            }
+          });
+          
+      }, [selectedParcels]);
+      
+      // Update markers when nodes change
+      useEffect(() => {
+        if (!mapRef.current) return;
+        
+        try {
+          // Clear existing markers
+          markersRef.current.forEach(m => mapRef.current.removeLayer(m));
+          markersRef.current = [];
+          
+          // Add new markers
+          nodes.forEach((node, idx) => {
+            const icon = L.divIcon({
+              className: 'node-marker-wrapper',
+              html: `<div style="width:28px;height:28px;background:linear-gradient(135deg,#1e3a5f 0%,#334e68 100%);border:3px solid white;border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,0.4);">${idx + 1}</div>`,
+              iconSize: [28, 28],
+              iconAnchor: [14, 14]
+            });
+            
+            const marker = L.marker([node.lat, node.lng], { icon })
+              .addTo(mapRef.current)
+              .on('click', (e) => {
+                L.DomEvent.stopPropagation(e);
+                setNodes(nodesRef.current.filter(n => n.id !== node.id));
+              });
+            
+            markersRef.current.push(marker);
+          });
+          
+          // Take snapshot for PDF - simple approach
+          setTimeout(() => {
+            if (mapContainer.current) {
+              html2canvas(mapContainer.current, { 
+                useCORS: true,
+                allowTaint: true
+              }).then(canvas => {
+                onSnapshot(canvas.toDataURL('image/png'));
+              }).catch(e => {
+                console.error('Snapshot error:', e);
+                onSnapshot(null);
+              });
+            }
+          }, 1500);
+          
+        } catch (e) {
+          console.error('Marker update error:', e);
+        }
+      }, [nodes]);
+      
+      if (mapError) {
+        return (
+          <div className="rounded-xl overflow-hidden border-2 border-navy-200 bg-navy-100 flex items-center justify-center mx-auto" style={{ width: '100%', maxWidth: '500px', height: '300px' }}>
+            <div className="text-center p-4">
+              <p className="text-navy-600 mb-2">⚠️ {mapError}</p>
+              <p className="text-sm text-navy-500">You can still proceed without placing nodes on the map.</p>
+            </div>
+          </div>
+        );
+      }
+      
+      return (
+        <div className="relative">
+          <div 
+            ref={mapContainer}
+            className="rounded-xl overflow-hidden border-2 border-navy-200 mx-auto"
+            style={{ width: '100%', maxWidth: '500px', height: '300px' }}
+          />
+          {!mapReady && (
+            <div className="absolute inset-0 bg-navy-100 rounded-xl flex items-center justify-center" style={{ height: '300px' }}>
+              <p className="text-navy-600">Loading map...</p>
+            </div>
+          )}
+          <div className="flex justify-between items-center mt-2 max-w-[500px] mx-auto">
+            <p className="text-xs text-navy-500">Tap map to place nodes • Tap node to remove</p>
+            <p className={`text-xs ${parcelStatus.includes('✓') ? 'text-green-600' : parcelStatus.includes('⚠️') ? 'text-orange-600' : 'text-navy-500'}`}>
+              {parcelStatus}
+            </p>
+          </div>
+        </div>
+      );
+    }
+    
+    // ============= OWNERS VIEW =============
+    function OwnersView({ setView, owners, setOwners, parcels }) {
+      const [editingOwner, setEditingOwner] = useState(null);
+      const [showForm, setShowForm] = useState(false);
+      const [formData, setFormData] = useState({
+        name: '', parcelNumber: '', acreage: '', address: '', phone: '', email: '', legalDescription: ''
+      });
+      
+      const handleSave = async () => {
+        if (editingOwner) {
+          await dbOperation('owners', 'readwrite', s => s.put({ ...formData, id: editingOwner.id }));
+        } else {
+          await dbOperation('owners', 'readwrite', s => s.add(formData));
+        }
+        const updated = await dbOperation('owners', 'readonly', s => s.getAll());
+        setOwners(updated);
+        setShowForm(false);
+        setEditingOwner(null);
+        setFormData({ name: '', parcelNumber: '', acreage: '', address: '', phone: '', email: '', legalDescription: '' });
+      };
+      
+      const handleDelete = async (id) => {
+        if (confirm('Delete this owner?')) {
+          await dbOperation('owners', 'readwrite', s => s.delete(id));
+          const updated = await dbOperation('owners', 'readonly', s => s.getAll());
+          setOwners(updated);
+        }
+      };
+      
+      const handleEdit = (owner) => {
+        setEditingOwner(owner);
+        setFormData(owner);
+        setShowForm(true);
+      };
+      
+      return (
+        <div className="animate-slide-up">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="font-display text-2xl font-bold text-white">Landowners</h2>
+            <button 
+              onClick={() => { setShowForm(true); setEditingOwner(null); setFormData({ name: '', parcelNumber: '', acreage: '', address: '', phone: '', email: '', legalDescription: '' }); }}
+              className="btn-primary"
+            >
+              + Add Owner
+            </button>
+          </div>
+          
+          {showForm ? (
+            <div className="card">
+              <h3 className="font-display text-lg font-bold text-navy-900 mb-4">
+                {editingOwner ? 'Edit Owner' : 'Add New Owner'}
+              </h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-navy-700 mb-1">Name *</label>
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={e => setFormData(f => ({ ...f, name: e.target.value }))}
+                    className="input-field"
+                    placeholder="John Smith"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-navy-700 mb-1">Parcel Number</label>
+                    <input
+                      type="text"
+                      value={formData.parcelNumber}
+                      onChange={e => setFormData(f => ({ ...f, parcelNumber: e.target.value }))}
+                      className="input-field"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-navy-700 mb-1">Acreage</label>
+                    <input
+                      type="text"
+                      value={formData.acreage}
+                      onChange={e => setFormData(f => ({ ...f, acreage: e.target.value }))}
+                      className="input-field"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-navy-700 mb-1">Address</label>
+                  <input
+                    type="text"
+                    value={formData.address}
+                    onChange={e => setFormData(f => ({ ...f, address: e.target.value }))}
+                    className="input-field"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-navy-700 mb-1">Phone</label>
+                    <input
+                      type="tel"
+                      value={formData.phone}
+                      onChange={e => setFormData(f => ({ ...f, phone: e.target.value }))}
+                      className="input-field"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-navy-700 mb-1">Email</label>
+                    <input
+                      type="email"
+                      value={formData.email}
+                      onChange={e => setFormData(f => ({ ...f, email: e.target.value }))}
+                      className="input-field"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-navy-700 mb-1">Legal Description</label>
+                  <textarea
+                    value={formData.legalDescription}
+                    onChange={e => setFormData(f => ({ ...f, legalDescription: e.target.value }))}
+                    className="input-field h-20"
+                  />
+                </div>
+              </div>
+              <div className="flex gap-3 mt-6">
+                <button 
+                  onClick={() => { setShowForm(false); setEditingOwner(null); }}
+                  className="flex-1 py-3 border-2 border-navy-200 rounded-xl text-navy-700 font-medium"
+                >
+                  Cancel
+                </button>
+                <button onClick={handleSave} className="flex-1 btn-primary">
+                  Save
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {owners.map(owner => (
+                <div key={owner.id} className="card flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold text-navy-900">{owner.name}</p>
+                    <p className="text-sm text-navy-500">Parcel: {owner.parcelNumber}</p>
+                    {owner.acreage && <p className="text-sm text-navy-500">{owner.acreage} acres</p>}
+                  </div>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => handleEdit(owner)}
+                      className="px-3 py-2 text-sm bg-navy-100 text-navy-700 rounded-lg"
+                    >
+                      Edit
+                    </button>
+                    <button 
+                      onClick={() => handleDelete(owner.id)}
+                      className="px-3 py-2 text-sm bg-red-100 text-red-700 rounded-lg"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {owners.length === 0 && (
+                <div className="card text-center py-12">
+                  <p className="text-navy-500 mb-4">No owners added yet.</p>
+                  <p className="text-sm text-navy-400">Add owners manually or import from shapefile in Settings.</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+    
+    // ============= PROVISIONS VIEW =============
+    function ProvisionsView({ setView, provisions, setProvisions }) {
+      const [showForm, setShowForm] = useState(false);
+      const [formData, setFormData] = useState({ text: '', category: 'General' });
+      
+      const categories = [...new Set(provisions.map(p => p.category))];
+      
+      const handleSave = async () => {
+        await dbOperation('provisions', 'readwrite', s => s.add(formData));
+        const updated = await dbOperation('provisions', 'readonly', s => s.getAll());
+        setProvisions(updated);
+        setShowForm(false);
+        setFormData({ text: '', category: 'General' });
+      };
+      
+      const handleDelete = async (id) => {
+        if (confirm('Delete this provision?')) {
+          await dbOperation('provisions', 'readwrite', s => s.delete(id));
+          const updated = await dbOperation('provisions', 'readonly', s => s.getAll());
+          setProvisions(updated);
+        }
+      };
+      
+      return (
+        <div className="animate-slide-up">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="font-display text-2xl font-bold text-white">Provisions</h2>
+            <button 
+              onClick={() => setShowForm(true)}
+              className="btn-primary"
+            >
+              + Add Provision
+            </button>
+          </div>
+          
+          {showForm ? (
+            <div className="card">
+              <h3 className="font-display text-lg font-bold text-navy-900 mb-4">Add New Provision</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-navy-700 mb-1">Category</label>
+                  <select
+                    value={formData.category}
+                    onChange={e => setFormData(f => ({ ...f, category: e.target.value }))}
+                    className="input-field"
+                  >
+                    {['Access', 'Proximity', 'Agriculture', 'Equipment', 'Timeline', 'Data', 'Termination', 'Liability', 'Insurance', 'Payment', 'General'].map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-navy-700 mb-1">Provision Text</label>
+                  <textarea
+                    value={formData.text}
+                    onChange={e => setFormData(f => ({ ...f, text: e.target.value }))}
+                    className="input-field h-32"
+                    placeholder="Enter the provision text..."
+                  />
+                </div>
+              </div>
+              <div className="flex gap-3 mt-6">
+                <button 
+                  onClick={() => setShowForm(false)}
+                  className="flex-1 py-3 border-2 border-navy-200 rounded-xl text-navy-700 font-medium"
+                >
+                  Cancel
+                </button>
+                <button onClick={handleSave} className="flex-1 btn-primary">
+                  Save
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {categories.map(cat => (
+                <div key={cat} className="card">
+                  <h3 className="font-semibold text-navy-900 mb-3 flex items-center gap-2">
+                    <span className="px-2 py-1 text-xs bg-earth-100 text-earth-700 rounded-full">{cat}</span>
+                  </h3>
+                  <div className="space-y-2">
+                    {provisions.filter(p => p.category === cat).map(p => (
+                      <div key={p.id} className="flex items-start justify-between gap-3 py-2 border-b border-navy-100 last:border-0">
+                        <p className="text-sm text-navy-700 flex-1">{p.text}</p>
+                        <button 
+                          onClick={() => handleDelete(p.id)}
+                          className="text-xs text-red-500 hover:text-red-700"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+    
+    // ============= SETTINGS VIEW =============
+    function SettingsView({ setView, asanaToken, setAsanaToken, companyName, setCompanyName, agentName, setAgentName, agentTitle, setAgentTitle, agentContact, setAgentContact, setParcels, loadData }) {
+      const fileInputRef = useRef(null);
+      const [importStatus, setImportStatus] = useState('');
+      
+      const [availableFields, setAvailableFields] = useState([]);
+      
+      const handleShapefileImport = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        setImportStatus('Processing shapefile...');
+        setAvailableFields([]);
+        
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          const geojson = await shp(arrayBuffer);
+          
+          const features = geojson.features || geojson;
+          let ownersAdded = 0;
+          let parcelsAdded = 0;
+          
+          // Log and save all field names from first feature
+          if (features.length > 0) {
+            const fieldNames = Object.keys(features[0].properties || {});
+            console.log('=== SHAPEFILE FIELDS ===');
+            console.log('Available fields:', fieldNames);
+            console.log('Sample values:', features[0].properties);
+            setAvailableFields(fieldNames);
+          }
+          
+          for (const feature of features) {
+            const props = feature.properties || {};
+            
+            // Try to extract owner info from common field names (case-insensitive search)
+            const findField = (fieldList) => {
+              for (const field of fieldList) {
+                // Check exact match first
+                if (props[field] !== undefined && props[field] !== null && props[field] !== '') {
+                  return props[field];
+                }
+                // Check case-insensitive
+                const key = Object.keys(props).find(k => k.toLowerCase() === field.toLowerCase());
+                if (key && props[key] !== undefined && props[key] !== null && props[key] !== '') {
+                  return props[key];
+                }
+              }
+              return '';
+            };
+            
+            const ownerName = findField([
+              'OWNER', 'OWNER1', 'OWNER_1', 'OWNERNAME', 'OWNER_NAME', 'OWN_NAME', 
+              'NAME', 'GRANTEE', 'GRANTOR', 'OWNR_NAME', 'OWNRNAME', 'PROPOWNER',
+              'PROPERTY_OWNER', 'LANDOWNER', 'OWNERNM', 'OWN1', 'OWNNM'
+            ]);
+            
+            const parcelNum = findField([
+              'APN', 'PARCEL', 'PARCELNUM', 'PARCEL_NUM', 'PARCELNUMB', 'PARCEL_ID', 'PARCELID',
+              'PIN', 'PID', 'PARNO', 'PARCEL_NO', 'PARCNO', 'TAXPIN', 'TAX_PIN',
+              'ASSESSOR', 'ASMT', 'TAXID', 'TAX_ID', 'PROPID', 'PROP_ID', 'ACCOUNT'
+            ]);
+            
+            const acreage = findField([
+              'ACRES', 'ACREAGE', 'GIS_ACRES', 'CALC_ACRES', 'GROSS_ACRE', 'NET_ACRES',
+              'SHAPE_AREA', 'AREA', 'SQFT', 'SQ_FT', 'LANDAREA', 'TOTALACRES', 'TOTACRES'
+            ]);
+            
+            const address = findField([
+              'ADDRESS', 'SITUS', 'SITUS_ADDR', 'SITE_ADDR', 'SITEADDRES', 'SITEADDR',
+              'PROP_ADDR', 'LOCATION', 'SITUSADDRE', 'PHYSICAL', 'STREET', 'FULLADDR',
+              'PROPADDRES', 'PROPERTY_A', 'MAIL_ADDR', 'MAILADDR'
+            ]);
+            
+            const legalDescription = findField([
+              'LEGAL', 'LEGALDESC', 'LEGAL_DESC', 'LEGALDESCR', 'LEGAL_DESCRIPTION',
+              'LEGDESC', 'LEGALDESCP', 'LEGAL1', 'LEGAL_1', 'LEGALDSC',
+              'SUBDIVISION', 'SUB_NAME', 'SUBDIVISIO', 'SUBDIV', 'PLAT', 'PLATNAME',
+              'LEGAL_DSC', 'FULLLEGAL', 'LEGALTXT', 'LEGALTEXT'
+            ]) || (
+              // Build from section/township/range if available
+              (findField(['SECTION', 'SEC']) && findField(['TOWNSHIP', 'TWP']) && findField(['RANGE', 'RNG'])) 
+                ? `Section ${findField(['SECTION', 'SEC'])}, Township ${findField(['TOWNSHIP', 'TWP'])}, Range ${findField(['RANGE', 'RNG'])}`
+                : ''
+            );
+            
+            // Save parcel geometry with parcel number for matching
+            if (feature.geometry) {
+              await dbOperation('parcels', 'readwrite', s => s.add({
+                parcelNumber: parcelNum,
+                geometry: feature,
+                legalDescription: legalDescription
+              }));
+              parcelsAdded++;
+            }
+            
+            // Save owner if we have a name OR a parcel number (some shapefiles don't have owner names)
+            if (ownerName || parcelNum) {
+              await dbOperation('owners', 'readwrite', s => s.add({
+                name: ownerName || `Parcel ${parcelNum}`,
+                parcelNumber: parcelNum,
+                acreage: acreage.toString(),
+                address: address,
+                legalDescription: legalDescription
+              }));
+              ownersAdded++;
+            }
+          }
+          
+          setImportStatus(`Imported ${ownersAdded} owners and ${parcelsAdded} parcels`);
+          loadData();
+        } catch (err) {
+          console.error('Shapefile import error:', err);
+          setImportStatus('Error importing shapefile: ' + err.message);
+        }
+      };
+      
+      return (
+        <div className="animate-slide-up space-y-6">
+          <h2 className="font-display text-2xl font-bold text-white">Settings</h2>
+          
+          {/* Company Info */}
+          <div className="card">
+            <h3 className="font-display text-lg font-bold text-navy-900 mb-4">Company Information</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-navy-700 mb-1">Company Name</label>
+                <input
+                  type="text"
+                  value={companyName}
+                  onChange={e => setCompanyName(e.target.value)}
+                  className="input-field"
+                  placeholder="Your Company Name"
+                />
+              </div>
+            </div>
+          </div>
+          
+          {/* Agent Info */}
+          <div className="card">
+            <h3 className="font-display text-lg font-bold text-navy-900 mb-4">Agent Information</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-navy-700 mb-1">Agent Name</label>
+                <input
+                  type="text"
+                  value={agentName}
+                  onChange={e => setAgentName(e.target.value)}
+                  className="input-field"
+                  placeholder="John Doe"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-navy-700 mb-1">Title</label>
+                <input
+                  type="text"
+                  value={agentTitle}
+                  onChange={e => setAgentTitle(e.target.value)}
+                  className="input-field"
+                  placeholder="Land Agent"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-navy-700 mb-1">Phone / Email</label>
+                <input
+                  type="text"
+                  value={agentContact}
+                  onChange={e => setAgentContact(e.target.value)}
+                  className="input-field"
+                  placeholder="555-123-4567 / agent@company.com"
+                />
+              </div>
+            </div>
+          </div>
+          
+          {/* ArcGIS Integration - Load from Map */}
+          <div className="card">
+            <h3 className="font-display text-lg font-bold text-navy-900 mb-4">🗺️ Load from ArcGIS Map</h3>
+            <p className="text-sm text-navy-600 mb-4">
+              Load owner and parcel data directly from your Blackford County ArcGIS layer.
+            </p>
+            <button 
+              onClick={async () => {
+                setImportStatus('Loading from ArcGIS...');
+                try {
+                  const owners = await loadOwnersFromArcGIS();
+                  // Clear existing and add new owners
+                  await dbOperation('owners', 'readwrite', s => s.clear());
+                  for (const owner of owners) {
+                    await dbOperation('owners', 'readwrite', s => s.add(owner));
+                  }
+                  const withLegal = owners.filter(o => o.legalDescription).length;
+                  setImportStatus(`✓ Loaded ${owners.length} parcels (${withLegal} with legal descriptions)`);
+                  loadData();
+                } catch (err) {
+                  setImportStatus('Error loading from ArcGIS: ' + err.message);
+                }
+              }}
+              className="w-full btn-primary"
+            >
+              🔄 Load Owners from ArcGIS
+            </button>
+            {importStatus && importStatus.includes('ArcGIS') && (
+              <p className={`mt-3 text-sm ${importStatus.includes('Error') ? 'text-red-600' : 'text-green-600'}`}>
+                {importStatus}
+              </p>
+            )}
+          </div>
+          
+          {/* Shapefile Import */}
+          <div className="card">
+            <h3 className="font-display text-lg font-bold text-navy-900 mb-4">Import Shapefile (Alternative)</h3>
+            <p className="text-sm text-navy-600 mb-4">
+              Upload a .zip file containing your county parcel shapefile. Owner names and parcel numbers will be extracted from the attribute table.
+            </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".zip"
+              onChange={handleShapefileImport}
+              className="hidden"
+            />
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full py-3 border-2 border-dashed border-navy-300 rounded-xl text-navy-600 hover:border-navy-500 hover:text-navy-800 transition-all"
+            >
+              📁 Select Shapefile (.zip)
+            </button>
+            {importStatus && !importStatus.includes('ArcGIS') && (
+              <p className={`mt-3 text-sm ${importStatus.includes('Error') ? 'text-red-600' : 'text-green-600'}`}>
+                {importStatus}
+              </p>
+            )}
+            {availableFields.length > 0 && (
+              <div className="mt-4 p-3 bg-navy-50 rounded-lg">
+                <p className="text-xs font-semibold text-navy-700 mb-2">Fields found in shapefile:</p>
+                <p className="text-xs text-navy-600 break-all">{availableFields.join(', ')}</p>
+                <p className="text-xs text-navy-500 mt-2 italic">
+                  If parcel/legal data is missing, let me know these field names and I'll update the mapping.
+                </p>
+              </div>
+            )}
+          </div>
+          
+          {/* Asana Integration */}
+          <div className="card">
+            <h3 className="font-display text-lg font-bold text-navy-900 mb-4">Asana Integration</h3>
+            <p className="text-sm text-navy-600 mb-4">
+              Enter your Asana Personal Access Token to enable automatic upload of completed agreements.
+            </p>
+            <div>
+              <label className="block text-sm font-medium text-navy-700 mb-1">Asana Token</label>
+              <input
+                type="password"
+                value={asanaToken}
+                onChange={e => setAsanaToken(e.target.value)}
+                className="input-field"
+                placeholder="Enter your Asana PAT"
+              />
+            </div>
+            <p className="text-xs text-navy-400 mt-2">
+              Get your token from: Asana → Settings → Apps → Personal Access Tokens
+            </p>
+          </div>
+          
+          {/* Data Management */}
+          <div className="card">
+            <h3 className="font-display text-lg font-bold text-navy-900 mb-4">Data Management</h3>
+            <button 
+              onClick={async () => {
+                if (confirm('Clear all local data? This cannot be undone.')) {
+                  const db = await initDB();
+                  const tx = db.transaction(['owners', 'provisions', 'agreements', 'parcels', 'settings'], 'readwrite');
+                  tx.objectStore('owners').clear();
+                  tx.objectStore('provisions').clear();
+                  tx.objectStore('agreements').clear();
+                  tx.objectStore('parcels').clear();
+                  tx.objectStore('settings').clear();
+                  loadData();
+                }
+              }}
+              className="w-full py-3 bg-red-100 text-red-700 rounded-xl font-medium"
+            >
+              Clear All Data
+            </button>
+          </div>
+        </div>
+      );
+    }
+    
+    // ============= PENDING VIEW =============
+    function PendingView({ setView, pendingUploads, asanaToken, isOnline, onSync }) {
+      const [syncing, setSyncing] = useState(false);
+      
+      const handleSync = async () => {
+        if (!isOnline || !asanaToken) return;
+        
+        setSyncing(true);
+        for (const agreement of pendingUploads) {
+          try {
+            await uploadToAsana(agreement, asanaToken);
+            await dbOperation('agreements', 'readwrite', s => s.put({ ...agreement, uploaded: true }));
+          } catch (err) {
+            console.error('Upload failed:', err);
+          }
+        }
+        setSyncing(false);
+        onSync();
+      };
+      
+      return (
+        <div className="animate-slide-up">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="font-display text-2xl font-bold text-white">Pending Uploads</h2>
+            {isOnline && asanaToken && pendingUploads.length > 0 && (
+              <button 
+                onClick={handleSync}
+                disabled={syncing}
+                className="btn-primary"
+              >
+                {syncing ? 'Syncing...' : 'Sync All'}
+              </button>
+            )}
+          </div>
+          
+          {!isOnline && (
+            <div className="card bg-orange-50 border border-orange-200 mb-4">
+              <p className="text-orange-700">You're offline. Agreements will sync when connection is restored.</p>
+            </div>
+          )}
+          
+          {!asanaToken && (
+            <div className="card bg-yellow-50 border border-yellow-200 mb-4">
+              <p className="text-yellow-700">Add your Asana token in Settings to enable sync.</p>
+            </div>
+          )}
+          
+          <div className="space-y-3">
+            {pendingUploads.map(agreement => (
+              <div key={agreement.id} className="card">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold text-navy-900">{agreement.owner?.name}</p>
+                    <p className="text-sm text-navy-500">
+                      {agreement.numberOfNodes} nodes • ${agreement.totalPayment?.toFixed(2)}
+                    </p>
+                    <p className="text-xs text-navy-400">
+                      {new Date(agreement.createdAt).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <span className="px-3 py-1 bg-orange-100 text-orange-700 text-sm rounded-full">
+                    Pending
+                  </span>
+                </div>
+              </div>
+            ))}
+            {pendingUploads.length === 0 && (
+              <div className="card text-center py-12">
+                <p className="text-navy-500">All agreements synced! ✓</p>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+    
+    // ============= PDF GENERATION =============
+    async function generatePDF(agreement) {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+      
+      let y = 20;
+      const margin = 20;
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const contentWidth = pageWidth - (margin * 2);
+      
+      // Helper function
+      const addText = (text, size = 11, style = 'normal') => {
+        doc.setFontSize(size);
+        doc.setFont('helvetica', style);
+        const lines = doc.splitTextToSize(text, contentWidth);
+        lines.forEach(line => {
+          if (y > 270) {
+            doc.addPage();
+            y = 20;
+          }
+          doc.text(line, margin, y);
+          y += size * 0.5;
+        });
+        y += 3;
+      };
+      
+      // Title
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text('PASSIVE SEISMIC SENSOR PLACEMENT &', pageWidth / 2, y, { align: 'center' });
+      y += 6;
+      doc.text('TEMPORARY ACCESS PERMISSION LETTER', pageWidth / 2, y, { align: 'center' });
+      y += 15;
+      
+      // Date and Landowner Info
+      addText(`Date: ${agreement.date}`, 11, 'normal');
+      addText(`Landowner Name(s): ${agreement.owner?.name || ''}`, 11, 'normal');
+      addText(`Parcel Number(s): ${agreement.owner?.parcelNumber || ''}`, 11, 'normal');
+      y += 5;
+      
+      // Intro paragraph
+      addText(`This Permission Letter ("Agreement") is entered into by and between ${agreement.companyName || '_____________'} ("Company") and the undersigned Landowner, for the limited purpose of allowing Company to place and retrieve a passive seismic sensor on the Property identified by the Parcel Numbers above and by the legal description(s) in Exhibit A attached hereto.`);
+      y += 5;
+      
+      // Sections
+      doc.setFont('helvetica', 'bold');
+      addText('1. Purpose and Scope', 11, 'bold');
+      doc.setFont('helvetica', 'normal');
+      addText('Company is conducting a passive seismic monitoring program in the area. Landowner grants Company permission to enter the Property to install, maintain, and remove passive seismic sensor(s) and associated small marker flagging, if required, at an approximate location or locations as depicted on the map in Exhibit B attached hereto. No ground disturbance beyond a shallow hand-placed installation will occur.');
+      y += 3;
+      
+      addText('2. Payment', 11, 'bold');
+      addText(`Company shall pay Landowner a fee of $${agreement.pricePerNode || '___'} per sensor per deployment (${agreement.numberOfNodes || '___'} sensors = $${agreement.totalPayment?.toFixed(2) || '___'} total), due upon installation. Company will also compensate Landowner for any actual surface damages, including crop loss, ruts, fence repair, or other disturbance, at locally customary rates.`);
+      y += 3;
+      
+      addText('3. Access', 11, 'bold');
+      addText('Company and its contractors may access the sensor location on foot or by light vehicle as reasonably necessary for installation, maintenance, and retrieval. Company will coordinate access to avoid interference with farming operations, livestock, and other ongoing land uses.');
+      y += 3;
+      
+      addText('4. Term', 11, 'bold');
+      // Calculate end date from start date + months
+      let endDateStr = '_______________';
+      if (agreement.date && agreement.months) {
+        const startDate = new Date(agreement.date);
+        startDate.setMonth(startDate.getMonth() + parseInt(agreement.months));
+        endDateStr = startDate.toLocaleDateString();
+      }
+      addText(`This Agreement is effective on the date signed and shall remain in effect until the earlier of: (a) Company removing the sensor, or (b) ${endDateStr} (${agreement.months || '___'} months from signing). Company shall restore the sensor location to substantially its prior condition upon removal.`);
+      y += 3;
+      
+      addText('5. No Transfer of Rights', 11, 'bold');
+      addText('This Agreement does not grant Company any mineral rights, surface lease, easement, or continuing right-of-way. It is a temporary, revocable permission solely for the placement and retrieval of a passive seismic sensor.');
+      y += 3;
+      
+      addText('6. Indemnity & Compliance', 11, 'bold');
+      addText('Company shall conduct operations in a safe and prudent manner and comply with all applicable laws. Company shall indemnify Landowner from liability arising directly from Company\'s activities on the Property, except to the extent caused by Landowner\'s negligence or misconduct.');
+      y += 3;
+      
+      // Special Provisions
+      addText('7. Special Provisions', 11, 'bold');
+      if (agreement.selectedProvisions?.length > 0 || agreement.customProvisions) {
+        // Get provision texts
+        const allProvisions = await dbOperation('provisions', 'readonly', s => s.getAll());
+        const selectedTexts = allProvisions
+          .filter(p => agreement.selectedProvisions?.includes(p.id))
+          .map(p => p.text);
+        
+        selectedTexts.forEach((text, idx) => {
+          addText(`• ${text}`);
+        });
+        
+        if (agreement.customProvisions) {
+          addText(agreement.customProvisions);
+        }
+      } else {
+        addText('None.');
+      }
+      y += 10;
+      
+      // Signatures
+      addText('LANDOWNER APPROVAL', 12, 'bold');
+      addText('I/We hereby grant temporary permission for the passive seismic sensor placement as described above.');
+      y += 5;
+      
+      // Landowner signature
+      if (agreement.landownerSignature) {
+        doc.addImage(agreement.landownerSignature, 'PNG', margin, y, 60, 20);
+        y += 25;
+      }
+      addText(`Landowner Signature                           Date: ${agreement.date}`);
+      addText(`Printed Name: ${agreement.owner?.name || ''}`);
+      addText(`Mailing Address: ${agreement.owner?.address || ''}`);
+      addText(`Phone / Email: ${agreement.owner?.phone || ''} / ${agreement.owner?.email || ''}`);
+      y += 10;
+      
+      addText('COMPANY REPRESENTATIVE', 12, 'bold');
+      y += 5;
+      
+      // Agent signature
+      if (agreement.agentSignature) {
+        doc.addImage(agreement.agentSignature, 'PNG', margin, y, 60, 20);
+        y += 25;
+      }
+      addText(`Signature                                      Date: ${agreement.date}`);
+      addText(`Printed Name & Title: ${agreement.agentName || ''}, ${agreement.agentTitle || ''}`);
+      addText(`Company: ${agreement.companyName || ''}`);
+      addText(`Phone / Email: ${agreement.agentContact || ''}`);
+      
+      // Exhibit A - Legal Description
+      doc.addPage();
+      y = 20;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.text('Exhibit A', pageWidth / 2, y, { align: 'center' });
+      y += 8;
+      doc.text('Legal Description of the Property', pageWidth / 2, y, { align: 'center' });
+      y += 15;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(11);
+      addText(agreement.legalDescription || 'See attached.');
+      
+      // Exhibit B - Map
+      doc.addPage();
+      y = 20;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.text('Exhibit B', pageWidth / 2, y, { align: 'center' });
+      y += 8;
+      doc.text('Map Depicting Property and Proposed Node Placement', pageWidth / 2, y, { align: 'center' });
+      y += 15;
+      
+      if (agreement.mapSnapshot) {
+        // Fixed dimensions matching 500x300px map (5:3 ratio)
+        const mapWidth = 170;  // mm
+        const mapHeight = 102; // mm (170 * 0.6 = 102, matching 5:3 ratio)
+        doc.addImage(agreement.mapSnapshot, 'PNG', margin, y, mapWidth, mapHeight);
+        y += mapHeight + 5;
+      } else {
+        doc.setFontSize(11);
+        doc.setFont('helvetica', 'italic');
+        doc.text('Map image not available. See node coordinates below.', margin, y);
+        y += 10;
+      }
+      
+      // Node coordinates table
+      if (agreement.nodes?.length > 0) {
+        y += 5;
+        doc.setFontSize(11);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Node Placement Coordinates', margin, y);
+        y += 8;
+        
+        // Table header
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Node', margin, y);
+        doc.text('Latitude', margin + 30, y);
+        doc.text('Longitude', margin + 80, y);
+        y += 2;
+        doc.setLineWidth(0.5);
+        doc.line(margin, y, margin + 130, y);
+        y += 5;
+        
+        // Table rows
+        doc.setFont('helvetica', 'normal');
+        agreement.nodes.forEach((node, idx) => {
+          doc.text(`${idx + 1}`, margin + 5, y);
+          doc.text(`${node.lat.toFixed(6)}°`, margin + 30, y);
+          doc.text(`${node.lng.toFixed(6)}°`, margin + 80, y);
+          y += 5;
+        });
+        
+        y += 5;
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'italic');
+        doc.text('Coordinates are in WGS84 (GPS) format.', margin, y);
+      }
+      
+      // Save PDF
+      const pdfBlob = doc.output('blob');
+      const filename = `SeismicAgreement_${agreement.owner?.name?.replace(/\s+/g, '_') || 'Unknown'}_${agreement.date}.pdf`;
+      
+      // Trigger download
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      
+      return pdfBlob;
+    }
+    
+    // ============= ARCGIS FUNCTIONS =============
+    
+    // Update parcel status in ArcGIS when agreement is signed
+    async function updateParcelStatus(parcelNumber, status = 'Signed') {
+      try {
+        // First, query to find the ObjectID of the parcel
+        const queryUrl = `${ARCGIS_FEATURE_SERVICE}/query?where=${ARCGIS_FIELDS.parcelNumber}='${parcelNumber}'&outFields=OBJECTID&f=json`;
+        const queryResponse = await fetch(queryUrl);
+        const queryData = await queryResponse.json();
+        
+        if (!queryData.features || queryData.features.length === 0) {
+          console.log('Parcel not found in ArcGIS:', parcelNumber);
+          return false;
+        }
+        
+        const objectId = queryData.features[0].attributes.OBJECTID;
+        
+        // Update the parcel status
+        const updateUrl = `${ARCGIS_FEATURE_SERVICE}/applyEdits`;
+        const updateData = {
+          updates: JSON.stringify([{
+            attributes: {
+              OBJECTID: objectId,
+              [ARCGIS_FIELDS.signedStatus]: status
+            }
+          }])
+        };
+        
+        const formBody = Object.keys(updateData)
+          .map(key => encodeURIComponent(key) + '=' + encodeURIComponent(updateData[key]))
+          .join('&') + '&f=json';
+        
+        const updateResponse = await fetch(updateUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: formBody
+        });
+        
+        const updateResult = await updateResponse.json();
+        console.log('ArcGIS update result:', updateResult);
+        
+        return updateResult.updateResults?.[0]?.success || false;
+      } catch (error) {
+        console.error('Error updating parcel status:', error);
+        return false;
+      }
+    }
+    
+    // Load owners directly from ArcGIS Feature Service
+    async function loadOwnersFromArcGIS() {
+      try {
+        const queryUrl = `${ARCGIS_FEATURE_SERVICE}/query?where=1=1&outFields=*&returnGeometry=false&f=json`;
+        
+        console.log('Fetching from ArcGIS:', queryUrl);
+        const response = await fetch(queryUrl);
+        const data = await response.json();
+        
+        console.log('ArcGIS response:', data);
+        
+        if (!data.features) {
+          throw new Error('No features returned from ArcGIS');
+        }
+        
+        // Log first feature to see available fields
+        if (data.features.length > 0) {
+          console.log('Sample feature attributes:', data.features[0].attributes);
+          console.log('Available fields:', Object.keys(data.features[0].attributes));
+        }
+        
+        const owners = data.features.map(f => {
+          const attrs = f.attributes;
+          // Calculate acres from Shape__Area if ACRES not available (Shape__Area is in sq meters)
+          let acreage = attrs.ACRES || attrs.GIS_ACRES || '';
+          if (!acreage && attrs.Shape__Area) {
+            acreage = (attrs.Shape__Area / 4046.86).toFixed(2); // Convert sq meters to acres
+          }
+          
+          const owner = {
+            name: attrs[ARCGIS_FIELDS.ownerName] || attrs.OWNER || 'Unknown',
+            parcelNumber: attrs[ARCGIS_FIELDS.parcelNumber] || attrs.PARCEL_ID || attrs.Parcel_ID || '',
+            legalDescription: attrs[ARCGIS_FIELDS.legalDescription] || attrs.LEGAL_DSC1 || attrs.LEGAL || '',
+            acreage: acreage.toString(),
+            address: '',
+            phone: '',
+            email: '',
+            fromArcGIS: true
+          };
+          
+          return owner;
+        });
+        
+        // Log how many have legal descriptions
+        const withLegal = owners.filter(o => o.legalDescription).length;
+        console.log(`Loaded ${owners.length} owners, ${withLegal} have legal descriptions`);
+        
+        return owners;
+      } catch (error) {
+        console.error('Error loading owners from ArcGIS:', error);
+        throw error;
+      }
+    }
+    
+    // ============= ASANA UPLOAD =============
+    // Asana Custom Field IDs
+    const ASANA_FIELD_NUM_NODES = '1212436621756807';
+    const ASANA_FIELD_PRICE_PER_NODE = '1212436623026212';
+    
+    async function uploadToAsana(agreement, token) {
+      const taskName = `Seismic Agreement: ${agreement.owner?.name} - ${agreement.owner?.parcelNumber}`;
+      
+      const notes = `
+**Landowner:** ${agreement.owner?.name}
+**Parcel:** ${agreement.owner?.parcelNumber}
+**Acreage:** ${agreement.owner?.acreage || 'N/A'}
+**Address:** ${agreement.owner?.address || 'N/A'}
+**Phone/Email:** ${agreement.owner?.phone || ''} / ${agreement.owner?.email || ''}
+
+**Agreement Details:**
+- Date: ${agreement.date}
+- Duration: ${agreement.months} months
+- Number of Nodes: ${agreement.numberOfNodes}
+- Price per Node: $${agreement.pricePerNode}
+- **Total Payment: $${agreement.totalPayment?.toFixed(2)}**
+
+**Node Locations:**
+${agreement.nodes?.map((n, i) => `${i + 1}. ${n.lat.toFixed(6)}, ${n.lng.toFixed(6)}`).join('\n') || 'None specified'}
+
+**Special Provisions:**
+${agreement.customProvisions || 'None'}
+
+**Agent:** ${agreement.agentName}, ${agreement.agentTitle}
+**Company:** ${agreement.companyName}
+
+---
+*Agreement signed on ${agreement.date}*
+      `.trim();
+      
+      // Build custom fields object
+      const customFields = {};
+      if (agreement.numberOfNodes) {
+        customFields[ASANA_FIELD_NUM_NODES] = parseFloat(agreement.numberOfNodes) || 0;
+      }
+      if (agreement.pricePerNode) {
+        customFields[ASANA_FIELD_PRICE_PER_NODE] = parseFloat(agreement.pricePerNode) || 0;
+      }
+      
+      const response = await fetch('https://app.asana.com/api/1.0/tasks', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          data: {
+            name: taskName,
+            notes: notes,
+            projects: [ASANA_PROJECT_ID],
+            custom_fields: customFields
+          }
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Asana error:', errorData);
+        throw new Error('Asana API error');
+      }
+      
+      return response.json();
+    }
+    
+    // ============= RENDER =============
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
