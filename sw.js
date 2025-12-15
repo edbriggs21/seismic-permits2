@@ -1,4 +1,4 @@
-const CACHE_NAME = 'seismic-permits-v20';
+const CACHE_NAME = 'seismic-permits-v21';
 const urlsToCache = [
   '/',
   '/index.html',
