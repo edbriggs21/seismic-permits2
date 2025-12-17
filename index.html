@@ -866,7 +866,7 @@
               <button
                 onClick={() => {
                   const center = formData.parcelCenter || { lat: 40.05, lng: -86.0 };
-                  const fieldMapsUrl = `arcgis-fieldmaps://?itemID=${ARCGIS_FIELDMAPS_WEBMAP}&center=${center.lat},${center.lng}&scale=2000`;
+                  const fieldMapsUrl = `arcgis-fieldmaps://?itemID=${ARCGIS_FIELDMAPS_WEBMAP}&center=${center.lat},${center.lng}&scale=2000&referenceContext=open`;
                   window.location.href = fieldMapsUrl;
                 }}
                 className="w-full mt-4 py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold text-lg flex items-center justify-center gap-2"
